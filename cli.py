@@ -6107,10 +6107,42 @@ class HermesCLI:
         parts = command.strip().split(maxsplit=1)
         msg = parts[1].strip() if len(parts) > 1 else ""
 
+        # Auto-generate commit message if not provided
         if not msg:
-            _cprint("[PUSH] No commit message provided.")
-            _cprint("Usage: /push <commit message>")
-            return
+            _cprint("[PUSH] No message provided — auto-generating from changes...")
+            # Summarize changed files
+            files_summary, _, _ = _run("git diff --name-status", cwd=git_root)
+            new_files, _, _ = _run("git ls-files --others --exclude-standard", cwd=git_root)
+
+            prefixes = set()
+            file_list = []
+            for line in (files_summary + "\n" + new_files).strip().splitlines():
+                if not line.strip():
+                    continue
+                parts_line = line.split("\t")
+                status = parts_line[0] if len(parts_line) > 1 else "A"
+                fname = parts_line[-1].strip()
+                if not fname:
+                    continue
+                file_list.append(fname)
+                if status == "M":
+                    prefixes.add("update")
+                elif status == "A":
+                    prefixes.add("add")
+                elif status == "D":
+                    prefixes.add("remove")
+                else:
+                    prefixes.add("chore")
+
+            action = ", ".join(sorted(prefixes)) if prefixes else "update"
+            # Use top-level dirs/files as scope
+            scopes = set()
+            for f in file_list:
+                top = f.split("/")[0] if "/" in f else f
+                scopes.add(top)
+            scope = ", ".join(sorted(scopes)[:3])
+            msg = f"{action}: {scope}"
+            _cprint(f"[PUSH] Auto-generated message: {msg}")
 
         # Stage all changes
         _, _, rc = _run("git add -A", cwd=git_root)
