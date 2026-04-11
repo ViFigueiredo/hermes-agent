@@ -1,0 +1,54 @@
+# Hermes Config Template
+# Substitua as chaves e ajuste conforme necessário
+
+model:
+  default: xiaomi/mimo-v2-pro
+  provider: nous
+  base_url: https://inference-api.nousresearch.com/v1
+  api_key: YOUR_API_KEY_HERE
+
+providers: {}
+fallback_providers: []
+
+credential_pool_strategies:
+  copilot: fill_first
+
+toolsets:
+- hermes-cli
+
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  tool_use_enforcement: auto
+  verbose: false
+  reasoning_effort: medium
+
+display:
+  personality: kawaii
+  streaming: true
+  inline_diffs: true
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+
+tts:
+  provider: naga
+  naga:
+    model: eleven-multilingual-v2:free
+    voice: jsCqWAovK2LkecY7zXl4
+    base_url: https://api.naga.ac/v1
+
+stt:
+  enabled: true
+  provider: elevenlabs
+  elevenlabs:
+    model: scribe_v1
+
+voice:
+  silence_threshold: 200
+  silence_duration: 3.0
+
+terminal:
+  backend: local
+  timeout: 180

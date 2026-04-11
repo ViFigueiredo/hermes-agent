@@ -1,0 +1,53 @@
+# =============================================================================
+# GitHub Actions: Deploy Hermes to VPS
+# Dispara quando push na branch main
+# =============================================================================
+
+name: Deploy Hermes to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "=== Atualizando Hermes na VPS ==="
+
+            # Puxa últimas mudanças
+            cd ~/.hermes/hermes-agent
+            git pull origin main
+
+            # Atualiza dependências
+            source .venv/bin/activate
+            pip install -e ".[all]" --upgrade > /dev/null 2>&1
+
+            # Sincroniza configurações do deploy
+            if [ -d deploy/skills ]; then
+              cp -r deploy/skills/* ~/.hermes/skills/ 2>/dev/null || true
+            fi
+
+            # Reinicia o gateway se estiver rodando
+            if systemctl is-active --quiet hermes; then
+              sudo systemctl restart hermes
+              echo "Gateway reiniciado via systemd"
+            else
+              hermes gateway restart 2>/dev/null || echo "Gateway não estava rodando"
+            fi
+
+            echo "=== Deploy completo! ==="
