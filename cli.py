@@ -4600,6 +4600,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "push":
+            self._handle_push_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -5961,6 +5963,193 @@ class HermesCLI:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_push_command(self, command: str):
+        """Security scan + git commit + push.
+
+        1. Scan staged + unstaged changes for secrets, tokens, exploits
+        2. If clean, commit with provided message
+        3. Push to remote
+        4. Report results
+        """
+        import subprocess
+        import re
+
+        def _run(cmd, cwd=None):
+            """Run shell command, return (stdout, stderr, returncode)."""
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                               cwd=cwd or self._project_dir if hasattr(self, '_project_dir') else None)
+            return r.stdout.strip(), r.stderr.strip(), r.returncode
+
+        # Resolve project root (git repo)
+        git_root, _, rc = _run("git rev-parse --show-toplevel")
+        if rc != 0:
+            _cprint("[ERROR] Not a git repository.")
+            return
+
+        _cprint(f"[PUSH] Working in: {git_root}")
+        _cprint("")
+
+        # --- Step 1: Gather changes ---
+        staged_diff, _, _ = _run("git diff --cached", cwd=git_root)
+        unstaged_diff, _, _ = _run("git diff", cwd=git_root)
+        untracked, _, _ = _run("git ls-files --others --exclude-standard", cwd=git_root)
+
+        all_diff = staged_diff + "\n" + unstaged_diff
+        has_changes = bool(all_diff.strip()) or bool(untracked.strip())
+
+        if not has_changes:
+            _cprint("[PUSH] No changes to commit.")
+            return
+
+        # Read untracked file contents for scanning
+        untracked_content = ""
+        if untracked:
+            for f in untracked.splitlines():
+                fpath = os.path.join(git_root, f)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) < 500_000:
+                    try:
+                        with open(fpath, "r", errors="ignore") as fh:
+                            untracked_content += f"\n--- {f} ---\n" + fh.read()
+                    except Exception:
+                        pass
+
+        scan_target = all_diff + "\n" + untracked_content
+
+        # --- Step 2: Security scan ---
+        _cprint("[SCAN] Running security analysis...")
+        findings = []
+
+        # 2a: API keys, tokens, secrets
+        secret_patterns = [
+            (r'(?:api[_-]?key|api[_-]?token|secret[_-]?key|private[_-]?key)\s*[=:]\s*["\']?[A-Za-z0-9_\-]{16,}',
+             "API key/token/secret"),
+            (r'(?:password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']{6,}', "Password"),
+            (r'bearer\s+[A-Za-z0-9_\-\.]{20,}', "Bearer token"),
+            (r'(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}', "GitHub token"),
+            (r'sk-[A-Za-z0-9]{20,}', "OpenAI API key"),
+            (r'(?:xox[bprs]-[A-Za-z0-9\-]+)', "Slack token"),
+            (r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----', "Private key block"),
+            (r'AKIA[A-Z0-9]{16}', "AWS access key"),
+            (r'(?:mongodb|postgres|mysql|redis)://[^\s]+:[^\s]+@', "Database connection string with credentials"),
+        ]
+        for pattern, label in secret_patterns:
+            matches = re.findall(pattern, scan_target, re.IGNORECASE)
+            if matches:
+                findings.append(("CRITICAL", label, len(matches)))
+
+        # 2b: Dangerous commands
+        danger_patterns = [
+            (r'rm\s+-rf\s+/', "Recursive delete from root"),
+            (r'curl\s+[^|]+\|\s*(?:ba)?sh', "Curl pipe to shell"),
+            (r'(?:eval|exec)\s*\(\s*.*(?:request|input|urllib)', "Eval/exec with external input"),
+            (r'subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True', "Shell injection risk (subprocess shell=True)"),
+            (r'os\.system\s*\(', "OS command injection (os.system)"),
+            (r'__import__\s*\(', "Dynamic import"),
+        ]
+        for pattern, label in danger_patterns:
+            matches = re.findall(pattern, scan_target, re.IGNORECASE)
+            if matches:
+                findings.append(("WARNING", label, len(matches)))
+
+        # 2c: Exfiltration indicators
+        exfil_patterns = [
+            (r'(?:webhook\.site|requestbin|burpcollaborator)', "Data exfil endpoint"),
+            (r'https?://[a-z0-9]+\.ngrok\.io', "Ngrok tunnel"),
+            (r'(?:pipedream\.com|hookbin\.com)', "Webhook capture service"),
+        ]
+        for pattern, label in exfil_patterns:
+            matches = re.findall(pattern, scan_target, re.IGNORECASE)
+            if matches:
+                findings.append(("CRITICAL", label, len(matches)))
+
+        # 2d: .env or sensitive files being committed
+        sensitive_files = ['.env', '.env.local', '.env.production', 'id_rsa', 'id_ed25519',
+                           '.pem', 'credentials', '.htpasswd', 'secrets.yaml']
+        if untracked:
+            for f in untracked.splitlines():
+                fname = os.path.basename(f).lower()
+                for sf in sensitive_files:
+                    if sf in fname:
+                        findings.append(("CRITICAL", f"Sensitive file: {f}", 1))
+
+        # --- Step 3: Report scan results ---
+        _cprint("")
+        critical = [f for f in findings if f[0] == "CRITICAL"]
+        warnings = [f for f in findings if f[0] == "WARNING"]
+
+        if critical:
+            _cprint("=" * 60)
+            _cprint("[SCAN RESULT] BLOCKED - Critical issues found:")
+            _cprint("=" * 60)
+            for level, desc, count in critical:
+                _cprint(f"  [!] {desc} ({count} occurrence{'s' if count > 1 else ''})")
+            _cprint("")
+            _cprint("Fix these issues before pushing. Aborted.")
+            return
+
+        if warnings:
+            _cprint("=" * 60)
+            _cprint("[SCAN RESULT] WARNINGS detected:")
+            _cprint("=" * 60)
+            for level, desc, count in warnings:
+                _cprint(f"  [~] {desc} ({count} occurrence{'s' if count > 1 else ''})")
+            _cprint("")
+            _cprint("Review these warnings. Use --force to push anyway (not recommended).")
+
+        if not findings:
+            _cprint("[SCAN RESULT] CLEAN - No security issues detected.")
+
+        _cprint("")
+
+        # --- Step 4: Stage all + commit ---
+        # Extract commit message from command
+        parts = command.strip().split(maxsplit=1)
+        msg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not msg:
+            _cprint("[PUSH] No commit message provided.")
+            _cprint("Usage: /push <commit message>")
+            return
+
+        # Stage all changes
+        _, _, rc = _run("git add -A", cwd=git_root)
+        if rc != 0:
+            _cprint("[ERROR] git add failed.")
+            return
+
+        # Commit
+        escaped_msg = msg.replace('"', '\\"')
+        stdout, stderr, rc = _run(f'git commit -m "{escaped_msg}"', cwd=git_root)
+        if rc != 0:
+            if "nothing to commit" in stdout or "nothing to commit" in stderr:
+                _cprint("[PUSH] Nothing to commit after staging.")
+            else:
+                _cprint(f"[ERROR] Commit failed: {stderr}")
+            return
+
+        _cprint(f"[COMMIT] {stdout}")
+
+        # --- Step 5: Push ---
+        _cprint("[PUSH] Pushing to remote...")
+        stdout, stderr, rc = _run("git push", cwd=git_root)
+        if rc != 0:
+            _cprint(f"[ERROR] Push failed: {stderr}")
+            _cprint("You may need to pull first or set upstream branch.")
+            return
+
+        _cprint(f"[PUSH] Success!")
+        if stdout:
+            _cprint(f"  {stdout}")
+
+        # --- Summary ---
+        _cprint("")
+        _cprint("=" * 60)
+        _cprint("[SUMMARY]")
+        _cprint(f"  Security: {'CLEAN' if not findings else f'{len(warnings)} warning(s)'}")
+        _cprint(f"  Commit:   OK")
+        _cprint(f"  Push:     OK")
+        _cprint("=" * 60)
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""

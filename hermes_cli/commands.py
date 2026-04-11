@@ -123,6 +123,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("push", "Security scan + git commit + push",
+               "Tools & Skills", cli_only=True,
+               args_hint="[commit message]", aliases=("ship",)),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
