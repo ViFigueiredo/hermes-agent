@@ -102,10 +102,14 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker/Podman container detection
+    # Docker/Podman container detection — only block if no audio devices
+    # are available. Distrobox and similar containers share /dev/snd and
+    # PulseAudio/PipeWire with the host, so audio works fine there.
     from hermes_constants import is_container
     if is_container():
-        warnings.append("Running inside Docker container -- no audio devices")
+        container_has_audio = os.path.isdir("/dev/snd")
+        if not container_has_audio:
+            warnings.append("Running inside Docker container -- no audio devices")
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
     # Only block if PULSE_SERVER is not configured.

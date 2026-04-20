@@ -82,6 +82,9 @@ def _import_sounddevice():
 # ===========================================================================
 # Defaults
 # ===========================================================================
+DEFAULT_NAGA_MODEL = "eleven-multilingual-v2:free"
+DEFAULT_NAGA_VOICE = "jsCqWAovK2LkecY7zXl4"
+DEFAULT_NAGA_TTS_BASE_URL = "https://api.naga.ac/v1"
 DEFAULT_PROVIDER = "edge"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
@@ -141,6 +144,17 @@ def _load_tts_config() -> Dict[str, Any]:
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+def _resolve_naga_api_key(tts_config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve Naga API key from config first, then environment."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    naga_cfg = cfg.get("naga", {}) if isinstance(cfg, dict) else {}
+    if isinstance(naga_cfg, dict):
+        cfg_key = str(naga_cfg.get("api_key", "")).strip()
+        if cfg_key:
+            return cfg_key
+    return os.getenv("NAGA_API_KEY", "").strip()
 
 
 def _resolve_elevenlabs_api_key(tts_config: Optional[Dict[str, Any]] = None) -> str:
@@ -225,6 +239,51 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
 
     communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
+    return output_path
+
+
+# ===========================================================================
+# Provider: Naga.ac TTS (ElevenLabs-compatible)
+# ===========================================================================
+def _generate_naga_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Naga.ac TTS API."""
+    import requests
+
+    api_key = _resolve_naga_api_key(tts_config)
+    if not api_key:
+        raise ValueError(
+            "Naga API key not set. Set NAGA_API_KEY env var or "
+            "tts.naga.api_key in config. Get one at https://naga.ac/"
+        )
+
+    naga_config = tts_config.get("naga", {})
+    model = naga_config.get("model", DEFAULT_NAGA_MODEL)
+    voice = naga_config.get("voice", DEFAULT_NAGA_VOICE)
+    base_url = naga_config.get("base_url", DEFAULT_NAGA_TTS_BASE_URL)
+    normalized_base_url = str(base_url).rstrip("/")
+    if normalized_base_url.endswith("/audio/speech"):
+        normalized_base_url = normalized_base_url[: -len("/audio/speech")]
+
+    endpoint = normalized_base_url + "/audio/speech"
+    response_format = "opus" if output_path.endswith(".ogg") else "mp3"
+    payload = {"model": model, "voice": voice, "input": text, "response_format": response_format}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info("Generating speech with Naga (voice=%s, model=%s)...", voice, model)
+    response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+    if response.status_code >= 400:
+        error_body = (response.text or "").strip()
+        if len(error_body) > 800:
+            error_body = error_body[:800] + "... [truncated]"
+        detail = error_body or response.reason or "unknown error"
+        raise ValueError(
+            f"Naga API error {response.status_code} (model={model}, voice={voice}): {detail}"
+        )
+    with open(output_path, "wb") as f:
+        f.write(response.content)
     return output_path
 
 
@@ -836,7 +895,11 @@ def text_to_speech_tool(
 
     try:
         # Generate audio with the configured provider
-        if provider == "elevenlabs":
+        if provider == "naga":
+            logger.info("Generating speech with Naga.ac TTS...")
+            _generate_naga_tts(text, file_str, tts_config)
+
+        elif provider == "elevenlabs":
             try:
                 _import_elevenlabs()
             except ImportError:
@@ -936,7 +999,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini", "naga"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -1004,6 +1067,12 @@ def check_tts_requirements() -> bool:
         _import_edge_tts()
         return True
     except ImportError:
+        pass
+    try:
+        tts_config = _load_tts_config()
+        if _resolve_naga_api_key(tts_config):
+            return True
+    except Exception:
         pass
     try:
         tts_config = _load_tts_config()
