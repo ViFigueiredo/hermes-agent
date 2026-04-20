@@ -7019,6 +7019,27 @@ class HermesCLI:
                     daemon=True,
                 ).start()
 
+            # Play MEDIA: audio files in CLI (e.g. from text_to_speech tool).
+            # Detects MEDIA:<path> tags with audio extensions and plays via ffplay.
+            if response:
+                import re as _re
+                _media_matches = _re.findall(r'MEDIA:\s*(\S+)', response)
+                _audio_exts = ('.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac')
+                for _media_path in _media_matches:
+                    _mp = os.path.expanduser(_media_path.rstrip('`"\' '))
+                    if os.path.isfile(_mp) and _mp.lower().endswith(_audio_exts):
+                        try:
+                            import shutil as _shutil
+                            if _shutil.which('ffplay'):
+                                threading.Thread(
+                                    target=lambda p=_mp: subprocess.run(
+                                        ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', p],
+                                        timeout=120,
+                                    ),
+                                    daemon=True,
+                                ).start()
+                        except Exception:
+                            pass
 
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
