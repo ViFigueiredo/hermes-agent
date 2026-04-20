@@ -421,8 +421,6 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
-    elif tts_provider == "naga" and get_env_value("NAGA_API_KEY"):
-        tool_status.append(("Text-to-Speech (Naga.ac)", True, None))
     elif tts_provider == "openai" and (
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
@@ -912,7 +910,6 @@ def _setup_tts_provider(config: dict):
     provider_labels = {
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
-        "naga": "Naga.ac",
         "openai": "OpenAI TTS",
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
@@ -936,7 +933,6 @@ def _setup_tts_provider(config: dict):
         [
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
-            "Naga.ac (OpenAI-compatible TTS, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
             "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
@@ -945,7 +941,7 @@ def _setup_tts_provider(config: dict):
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "naga", "openai", "xai", "minimax", "mistral", "gemini", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -998,19 +994,6 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
-
-    elif selected == "naga":
-        existing = get_env_value("NAGA_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("Naga.ac API key for TTS", password=True)
-            if api_key:
-                save_env_value("NAGA_API_KEY", api_key)
-                print_success("Naga.ac API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-        config.setdefault("tts", {}).setdefault("naga", {})["voice"] = "jsCqWAovK2LkecY7zXl4"
 
     elif selected == "openai" and not selected_via_nous:
         existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
@@ -1102,7 +1085,6 @@ def _setup_stt_provider(config: dict):
         "openai": "OpenAI",
         "mistral": "Mistral",
         "elevenlabs": "ElevenLabs",
-        "naga": "Naga.ac",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -1117,10 +1099,9 @@ def _setup_stt_provider(config: dict):
         "OpenAI Whisper (needs API key)",
         "Mistral Voxtral (needs API key)",
         "ElevenLabs STT (needs API key)",
-        "Naga.ac (OpenAI-compatible STT, needs API key)",
         f"Keep current ({current_label})",
     ]
-    providers = ["local", "groq", "openai", "mistral", "elevenlabs", "naga"]
+    providers = ["local", "groq", "openai", "mistral", "elevenlabs"]
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select STT provider:", choices, keep_current_idx)
 
@@ -1170,17 +1151,6 @@ def _setup_stt_provider(config: dict):
             if api_key:
                 save_env_value("ELEVENLABS_API_KEY", api_key)
                 print_success("ElevenLabs API key saved")
-            else:
-                print_warning("No API key provided. Falling back to local STT.")
-                selected = "local"
-    elif selected == "naga":
-        existing = get_env_value("NAGA_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("Naga.ac API key for STT", password=True)
-            if api_key:
-                save_env_value("NAGA_API_KEY", api_key)
-                print_success("Naga.ac API key saved")
             else:
                 print_warning("No API key provided. Falling back to local STT.")
                 selected = "local"
@@ -2857,7 +2827,6 @@ SETUP_SECTIONS = [
 # configuration. Keep this list in the same order as the visible menu entries.
 RETURNING_USER_MENU_SECTION_KEYS = [
     "model",
-    "stt",
     "terminal",
     "gateway",
     "tools",
@@ -2872,6 +2841,7 @@ def run_setup_wizard(args):
       hermes setup           — full or quick (auto-detected)
       hermes setup model     — just model/provider
       hermes setup tts       — just text-to-speech
+      hermes setup stt       — just speech-to-text provider
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
@@ -2989,7 +2959,6 @@ def run_setup_wizard(args):
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
             "Model & Provider",
-            "Speech-to-Text",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
@@ -3005,10 +2974,10 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice == 8:
+        elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 2 <= choice <= 7:
+        elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
             # so positional indexing (choice - 2) would dispatch the wrong section.
