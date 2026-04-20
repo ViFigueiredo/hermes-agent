@@ -932,6 +932,21 @@ def text_to_speech_tool(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
+        # Auto-play in CLI mode when audio output is available (ffplay + PulseAudio/PipeWire).
+        _is_cli = not platform or platform == "cli"
+        if _is_cli and shutil.which("ffplay"):
+            try:
+                import threading
+                threading.Thread(
+                    target=lambda p=file_str: subprocess.run(
+                        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", p],
+                        timeout=120,
+                    ),
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
+
         return json.dumps({
             "success": True,
             "file_path": file_str,
